@@ -1,4 +1,4 @@
-from ..core.run import main
+from core.run import main
 from . import multi_language
 
 import json

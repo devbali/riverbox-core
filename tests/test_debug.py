@@ -1,4 +1,4 @@
-from ..core.run import main
+from core.run import main
 import json
 from uuid import uuid4
 from . import multi_language
