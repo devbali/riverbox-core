@@ -3,19 +3,23 @@
 import uuid
 import inspect
 import json
+import textwrap
 from typing import Any, Dict, List, Optional
 
-# --------------------------------------------------------------------------------
-# GLOBAL REGISTRY for decorated functions.
-# --------------------------------------------------------------------------------
+from core.run import main
+
+# ------------------------------------------------------------
+# GLOBAL REGISTRY for decorated functions. 
+# When you do @rbx_function({ … }), we store those params here.
+# ------------------------------------------------------------
 _REGISTERED_RBX_FUNCTIONS: Dict[Any, Dict[str, Any]] = {}
 
 
 def rbx_function(params: Dict[str, Any]):
     """
-    Decorator to mark a Python function as a "riverbox cube".
-    The `params` dict can contain keys like "kind", "name", "arg-key", "default-value", etc.
-    We store it in a global registry so that Flow.add_cube(fn) knows how to build it.
+    Decorator to mark a Python function as a “riverbox cube.” 
+    The `params` dict can contain keys like “kind”, “name”, “arg-key”, “default-value”, etc.
+    We store it in a global registry so that Flow.add_cube(fn) can look it up.
     """
     def decorator(fn):
         _REGISTERED_RBX_FUNCTIONS[fn] = params.copy()
@@ -24,13 +28,15 @@ def rbx_function(params: Dict[str, Any]):
 
 
 def _new_id() -> str:
-    """Generate a fresh UUID string each time."""
+    """Return a fresh UUID string each time."""
     return str(uuid.uuid4())
 
+def get_invocation_metadata() -> Dict[str, Any]:
+    return {"execution-id": _new_id(), "flow-id": _new_id(), "invocation-id": _new_id()}
 
-# --------------------------------------------------------------------------------
+# ------------------------------------------------------------
 # C L A S S   C U B E
-# --------------------------------------------------------------------------------
+# ------------------------------------------------------------
 class Cube:
     def __init__(
         self,
@@ -43,8 +49,8 @@ class Cube:
         default_value: Optional[Any] = None,
         metadata: Optional[Dict[str, Any]] = None,
         tags: Optional[List[str]] = None,
-        tag_stack: Optional[List[List[str]]] = None,
-        # --- EXTRA FIELDS FOR A "FLOW" cube ---
+        # **Note: we no longer store tag_stack here.** 
+        # Instead, we compute it at serialization time.
         inner_cubes: Optional[List["Cube"]] = None,
         execution_id: Optional[str] = None,
         run_on_same: Optional[bool] = None,
@@ -59,12 +65,12 @@ class Cube:
         self.default_value: Optional[Any] = default_value
         self.metadata: Dict[str, Any] = metadata.copy() if metadata else {}
         self.tags: List[str] = list(tags) if tags else []
-        self.tag_stack: List[List[str]] = [list(ts) for ts in tag_stack] if tag_stack else []
-        # Always keep track of edges out of this cube
+        # Edges going out of this cube
         self.start_edges: List[Dict[str, Any]] = []
 
-        # Only used if kind == "FLOW":
+        # If this is a FLOW‐cube, we store its nested cubes here:
         self.inner_cubes: List[Cube] = list(inner_cubes) if inner_cubes else []
+        # Extra FLOW‐specific fields:
         self.execution_id: Optional[str] = execution_id
         self.run_on_same: Optional[bool] = run_on_same
         self.sub_flow_id: Optional[str] = sub_flow_id
@@ -80,30 +86,60 @@ class Cube:
         edge_id: Optional[str] = None,
     ) -> None:
         """
-        Create a directed edge from THIS cube → target cube.
-        - end_arg_key: which argument on the target this edge feeds.
-        - start_arg_key: which output key on this cube is being sent (or None).
-        - kind: e.g. "REGULAR", "MAP", etc.
+        Create an edge from self → target.
+        - `end_arg_key`: which argument on the target this edge feeds into.
+        - `start_arg_key`: which output key on self is being sent (or None).
+        - `kind`: e.g. "REGULAR", "MAP", etc.
         """
         eid = edge_id or _new_id()
-        edge_dict = {
+        edge = {
             "id": eid,
             "end": target.id,
             "end-arg-key": end_arg_key,
             "start-arg-key": start_arg_key,
             "kind": kind,
         }
-        self.start_edges.append(edge_dict)
+        self.start_edges.append(edge)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def _compute_this_flow_summary(self) -> Dict[str, Any]:
         """
-        Serialize this Cube into a dict exactly matching your JSON spec.
-        Emits different fields depending on self.kind:
-        - PARAM: needs "arg-key" + "default-value".
-        - REGULAR: needs "code".
-        - RESULT: needs "arg-key".
-        - FLOW: needs "execution-id", "run-on-same", "sub-flow-id", "env", "tags", "tag-stack", and nested "cubes".
-        Always includes "start-edges" (even if empty).
+        Return a summary-dict of the form:
+            {
+              "main": [ this_flow’s tags ],
+              "cubes": {
+                "<child-cube-id>": {
+                  "kind": "<child.kind>",
+                  # if child.kind == "FLOW", include child.tags here
+                  "tags": [ ... ],
+                  "start-edges": [ ... ]
+                },
+                ...
+              }
+            }
+        This is used to build the "tag-stack" entry for any FLOW cube.
+        """
+        cubes_dict: Dict[str, Any] = {}
+        for child in self.inner_cubes:
+            entry: Dict[str, Any] = {"kind": child.kind, "start-edges": list(child.start_edges)}
+            if child.kind == "FLOW":
+                # Only FLOW‐cubes have their own tags to include
+                entry["tags"] = list(child.tags)
+            cubes_dict[child.id] = entry
+
+        return {
+            "main": list(self.tags),
+            "cubes": cubes_dict
+        }
+
+    def to_dict(self, parent_tag_stack: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+        """
+        Emit a dict matching your JSON spec, **including** a computed "tag-stack" if self.kind == "FLOW".
+        For non-FLOW cubes, we omit "tag-stack."
+
+        If this cube is a FLOW, we compute:
+          new_tag_stack = (parent_tag_stack or []) + [ this_flow_summary ]
+        and include "tag-stack": new_tag_stack.  Then we embed all nested cubes by calling
+        to_dict(...) on each, passing down new_tag_stack (so that deeper FLOWs build theirs properly).
         """
         base: Dict[str, Any] = {
             "id": self.id,
@@ -127,34 +163,53 @@ class Cube:
             if self.arg_key is not None:
                 base["arg-key"] = self.arg_key
 
-        # FLOW cubes (embed nested cubes, plus extra flow‐specific fields)
+        # FLOW cubes: we must include execution-id, run-on-same, sub-flow-id, env, tags, and nested cubes
         if self.kind == "FLOW":
             if self.execution_id is not None:
                 base["execution-id"] = self.execution_id
-            # run-on-same must be included (default to False if None)
             base["run-on-same"] = self.run_on_same if self.run_on_same is not None else False
             base["sub-flow-id"] = self.sub_flow_id if self.sub_flow_id is not None else ""
             if self.env:
                 base["env"] = self.env
+            else:
+                base["env"] = {}
+
             if self.tags:
                 base["tags"] = list(self.tags)
-            if self.tag_stack:
-                base["tag-stack"] = [list(ts) for ts in self.tag_stack]
-            # Now embed the nested cubes
-            base["cubes"] = [c.to_dict() for c in self.inner_cubes]
 
-        # If there is per‐cube metadata for non‐FLOW cubes, include it
-        if self.metadata and self.kind != "FLOW":
+            # 1) Compute this flow’s summary (main/tags + cubes summary)
+            this_summary = self._compute_this_flow_summary()
+
+            # 2) Build the new tag-stack for this FLOW cube
+            new_tag_stack: List[Dict[str, Any]] = []
+            if parent_tag_stack:
+                new_tag_stack.extend(parent_tag_stack)
+            new_tag_stack.append(this_summary)
+            base["tag-stack"] = new_tag_stack
+
+            # 3) Now serialize inner_cubes, passing down new_tag_stack when needed:
+            nested_list: List[Dict[str, Any]] = []
+            for child in self.inner_cubes:
+                if child.kind == "FLOW":
+                    # Pass the new_tag_stack so that deeper FLOWs build on it:
+                    nested_list.append(child.to_dict(parent_tag_stack=new_tag_stack))
+                else:
+                    # Non-FLOW cubes do not carry a tag-stack of their own
+                    nested_list.append(child.to_dict())
+            base["cubes"] = nested_list
+
+        # If there is per-cube metadata (but only for non-FLOW cubes)
+        if self.metadata:
             base["metadata"] = self.metadata
 
-        # Always attach start-edges (even if empty)
+        # Always include start-edges (even if empty)
         base["start-edges"] = list(self.start_edges)
         return base
 
 
-# --------------------------------------------------------------------------------
+# ------------------------------------------------------------
 # C L A S S   F L O W
-# --------------------------------------------------------------------------------
+# ------------------------------------------------------------
 class Flow:
     def __init__(
         self,
@@ -167,71 +222,77 @@ class Flow:
         language: str = "python",
         version: str = "3.11",
         tags: Optional[List[str]] = None,
-        tag_stack: Optional[List[List[str]]] = None,
         env: Optional[Dict[str, Any]] = None,
         args: Optional[Dict[str, Any]] = None,
     ):
-        # If this Flow is later embedded as a Cube(kind="FLOW"), these fields are used.
+        # If this Flow is later embedded as a FLOW cube, these fields are used:
         self.name: Optional[str] = name or ""
         self.execution_id: Optional[str] = execution_id
         self.run_on_same: Optional[bool] = run_on_same
         self.sub_flow_id: Optional[str] = sub_flow_id
 
-        # Top-level metadata (these go into the top JSON's "metadata")
+        # Top‐level metadata (for either a top‐level Flow → JSON, or a nested Flow)
         self.metadata: Dict[str, Any] = {
             "riverbox-version": riverbox_version,
             "language": language,
             "version": version,
         }
         self.tags: List[str] = list(tags) if tags else []
-        self.tag_stack: List[List[str]] = [list(ts) for ts in tag_stack] if tag_stack else []
 
-        # flow-level env/args
+        # flow-level env / args
         self.env: Dict[str, Any] = env.copy() if env else {}
         self.args: Dict[str, Any] = args.copy() if args else {}
 
-        # Internally store all cubes (including nested flows if any)
+        # Internally store all cubes (including nested FLOWS as Cube(kind="FLOW"))
         self._cubes: List[Cube] = []
 
     def add_cube(self, spec: Any) -> Cube:
         """
-        Two special cases:
-          1. If 'spec' is a Python function previously decorated @rbx_function(…),
-             we look it up in _REGISTERED_RBX_FUNCTIONS, grab its params + source code,
-             and construct a Cube(kind="REGULAR", code=…).
-          2. If 'spec' is a dict, we assume the user already knows the exact fields
-             for a single cube (including maybe a "FLOW" cube that already has its
-             nested "cubes": […]). We shallow-copy those fields into a new Cube.
-          3. If 'spec' is a Flow object, we wrap it into a Cube(kind="FLOW", …),
-             pulling in spec.name, spec.execution_id, spec.run_on_same, spec.sub_flow_id,
-             spec.env, spec.tags, spec.tag_stack, and for each nested sub-cube in spec._cubes,
-             we embed them. 
+        Three supported cases:
+          (A) spec is a decorated Python function  → build a REGULAR (or PARAM/RESULT) cube
+          (B) spec is a dict                   → shallow-copy it into a Cube
+          (C) spec is another Flow instance   → wrap it into a Cube(kind="FLOW")
         """
         # --- CASE A: a decorated function  ---
         if callable(spec) and spec in _REGISTERED_RBX_FUNCTIONS:
             params = _REGISTERED_RBX_FUNCTIONS[spec]
             kind = params.get("kind", "REGULAR")
             name = params.get("name", spec.__name__)
+
+            # 1) Grab the full source
             try:
-                source = inspect.getsource(spec)
+                raw_source = inspect.getsource(spec)
             except OSError:
-                source = None
+                clean_body = None
+            else:
+                lines = raw_source.splitlines()
+
+                # 2) Remove all leading decorator lines (those starting with '@')
+                i = 0
+                while i < len(lines) and not lines[i].strip().startswith("def"):
+                    i += 1
+                # Now lines[i] should be the 'def …:' line
+                # 3) Everything _after_ that line is the function body
+                body_lines = lines[i + 1 :]
+
+                # 4) Dedent the body so it's flush at column 0
+                clean_body = textwrap.dedent("\n".join(body_lines)).rstrip()
+            
 
             cube = Cube(
                 id=params.get("id"),
                 kind=kind,
                 name=name,
-                code=source,
+                code=clean_body,
                 arg_key=params.get("arg-key"),
                 default_value=params.get("default-value"),
                 metadata=params.get("metadata"),
                 tags=params.get("tags"),
-                tag_stack=params.get("tag-stack"),
             )
             self._cubes.append(cube)
             return cube
 
-        # --- CASE B: a raw dict describing a single cube  ---
+        # CASE B: raw dict describing a cube
         elif isinstance(spec, dict):
             kind = spec["kind"]
             name = spec["name"]
@@ -244,8 +305,7 @@ class Flow:
                 default_value=spec.get("default-value"),
                 metadata=spec.get("metadata"),
                 tags=spec.get("tags"),
-                tag_stack=spec.get("tag-stack"),
-                # If it's already a FLOW‐dict, pull out nested cubes
+                # If it’s already a FLOW‐dict, pull in nested cubes recursively:
                 inner_cubes=[
                     Cube(
                         id=sc.get("id"),
@@ -256,29 +316,28 @@ class Flow:
                         default_value=sc.get("default-value"),
                         metadata=sc.get("metadata"),
                         tags=sc.get("tags"),
-                        tag_stack=sc.get("tag-stack"),
                         execution_id=sc.get("execution-id"),
                         run_on_same=sc.get("run-on-same"),
                         sub_flow_id=sc.get("sub-flow-id"),
                         env=sc.get("env"),
-                        # Recursive: if sc itself has "cubes", build them too
                         inner_cubes=[
-                            Cube(**{
-                                "id": subsc.get("id"),
-                                "kind": subsc["kind"],
-                                "name": subsc["name"],
-                                "code": subsc.get("code"),
-                                "arg_key": subsc.get("arg-key"),
-                                "default_value": subsc.get("default-value"),
-                                "metadata": subsc.get("metadata"),
-                                "tags": subsc.get("tags"),
-                                "tag_stack": subsc.get("tag-stack"),
-                                "execution_id": subsc.get("execution-id"),
-                                "run_on_same": subsc.get("run-on-same"),
-                                "sub_flow_id": subsc.get("sub-flow-id"),
-                                "env": subsc.get("env", {}),
-                                "inner_cubes": [] if not subsc.get("cubes") else None,  # deeper nesting can likewise be handled recursively
-                            })
+                            # You could recurse deeper if needed. For simplicity, 
+                            # we handle only one level at a time here.
+                            Cube(
+                                id=subsc.get("id"),
+                                kind=subsc["kind"],
+                                name=subsc["name"],
+                                code=subsc.get("code"),
+                                arg_key=subsc.get("arg-key"),
+                                default_value=subsc.get("default-value"),
+                                metadata=subsc.get("metadata"),
+                                tags=subsc.get("tags"),
+                                execution_id=subsc.get("execution-id"),
+                                run_on_same=subsc.get("run-on-same"),
+                                sub_flow_id=subsc.get("sub-flow-id"),
+                                env=subsc.get("env", {}),
+                                inner_cubes=[],
+                            )
                             for subsc in sc.get("cubes", [])
                         ]
                     )
@@ -289,15 +348,14 @@ class Flow:
                 sub_flow_id=spec.get("sub-flow-id"),
                 env=spec.get("env"),
             )
-            # If the dict already had its own "start-edges", copy them in
             if "start-edges" in spec:
                 cube.start_edges = list(spec["start-edges"])
             self._cubes.append(cube)
             return cube
 
-        # --- CASE C: a Flow object → embed it as a "FLOW" cube  ---
+        # CASE C: embed another Flow as a FLOW‐cube
         elif isinstance(spec, Flow):
-            # Use spec.name, spec.execution_id, spec.run_on_same, spec.sub_flow_id, spec.env, spec.tags, spec.tag_stack
+            # Wrap the entire Flow object into a single Cube(kind="FLOW")
             cube = Cube(
                 id=None,
                 kind="FLOW",
@@ -307,7 +365,6 @@ class Flow:
                 default_value=None,
                 metadata=dict(spec.metadata),
                 tags=spec.tags,
-                tag_stack=spec.tag_stack,
                 inner_cubes=list(spec._cubes),
                 execution_id=spec.execution_id or _new_id(),
                 run_on_same=spec.run_on_same if spec.run_on_same is not None else False,
@@ -319,34 +376,71 @@ class Flow:
 
         else:
             raise ValueError(
-                "add_cube expects either: \n"
-                "  • a function decorated with @rbx_function, \n"
-                "  • a dict describing a single cube, or \n"
+                "add_cube expects either:\n"
+                "  • a function decorated with @rbx_function, or\n"
+                "  • a dict describing a cube, or\n"
                 "  • a Flow object (to embed as kind='FLOW')."
             )
 
     def to_json(self, indent: int = 2) -> str:
         """
-        Emit the full JSON representation of this Flow:
-        {
-          "metadata": {…},
-          "tags": […],
-          "tag-stack": [ […], … ],
-          "env": {…},
-          "args": {…},
-          "flow": {
-            "cubes": [ <each cube.to_dict()> … ]
-          }
-        }
+        Serialize this Flow (top‐level) to a JSON string with exactly:
+
+            {
+              "metadata": { … },
+              "tags": [ … ],
+              "tag-stack": [ <one dictionary for this flow> ],
+              "env": { … },
+              "args": { … },
+              "flow": {
+                "cubes": [ <cube1_dict>, <cube2_dict>, … ]
+              }
+            }
+
+        Where “tag-stack” is computed as an array of exactly one dict for the top‐level flow,
+        and nested FLOW‐cubes will append their own entries when you inspect their to_dict().
         """
-        full_dict: Dict[str, Any] = {
+        # 1) Build the top-level flow summary dict (for tag-stack)
+        top_summary: Dict[str, Any] = {
+            "main": list(self.tags),
+            "cubes": {
+                cube.id: (
+                    {"kind": cube.kind,
+                     **({"tags": cube.tags} if cube.kind == "FLOW" else {}),
+                     "start-edges": list(cube.start_edges)
+                     }
+                )
+                for cube in self._cubes
+            }
+        }
+
+        # 2) At top‐level, tag_stack is a list containing exactly this one dict
+        top_tag_stack: List[Dict[str, Any]] = [top_summary]
+
+        # 3) Now serialize each cube: pass parent_tag_stack=top_tag_stack if kind=="FLOW"
+        serialized_cubes: List[Dict[str, Any]] = []
+        for cube in self._cubes:
+            if cube.kind == "FLOW":
+                serialized_cubes.append(cube.to_dict(parent_tag_stack=top_tag_stack))
+            else:
+                serialized_cubes.append(cube.to_dict())
+
+        full: Dict[str, Any] = {
             "metadata": self.metadata,
-            "tags": self.tags,
-            "tag-stack": self.tag_stack,
+            "tags": list(self.tags),
+            "tag-stack": top_tag_stack,
             "env": self.env,
             "args": self.args,
             "flow": {
-                "cubes": [cube.to_dict() for cube in self._cubes]
+                "cubes": serialized_cubes
             },
         }
-        return json.dumps(full_dict, indent=indent)
+        
+        if indent == -1:
+            #print(json.dumps(full, indent=4))
+            return full
+        return json.dumps(full, indent=indent)
+    
+    def run_full_with_args (self, callback, args):
+        return main(self.to_json(-1), get_invocation_metadata(), callback, "FULL",  args=args)
+
