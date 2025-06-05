@@ -213,7 +213,6 @@ class CubeExecution:
         return f"Cube {self.name} Execution"
 
     def ast_analyze(self, code):
-        print("----<>self.flow", self.flow.riverbox_metadata)
         if self.flow.riverbox_metadata["language"] == "python":
             module = ast.parse(code)
             self.function_name = None

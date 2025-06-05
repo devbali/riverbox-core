@@ -1,5 +1,6 @@
 
 from riverbox_builder import Flow, rbx_function
+import json
 
 def get_sub_flow ():
     # 1) Define two Python functions and mark them as cubes
@@ -18,7 +19,9 @@ def get_sub_flow ():
     })
     def chat_gpt(prompt):
         import time
+        import json
         time.sleep(0.2)
+        print(f"Print out tagstack---> {json.dumps(rbxm.riverbox_metadata["tag-stack"])}")
         rbxm.output = "Bears are funny (GPT)"
 
     # 2) Build a sub‐flow “Sleep 0.2” that has:
@@ -42,7 +45,7 @@ def get_sub_flow ():
         "kind": "PARAM",
         "name": "Topics",
         "arg-key": "prompt",
-        "default-value": '[["bears"], ["dogs"]]',
+        "default-value": '["bears", "dogs"]',
         "start-edges": [],  # we’ll wire these after we add the other cubes
     })
 
@@ -64,7 +67,7 @@ def get_sub_flow ():
     param_topics.add_edge_to(joke_prompt, end_arg_key="topics", start_arg_key=None, kind="MAP")
 
     #     make_joke_prompt → chatGPT (feed “prompt” → “prompt”)
-    joke_prompt.add_edge_to(chat_cube, end_arg_key="prompt", start_arg_key=None, kind="REGULAR")
+    joke_prompt.add_edge_to(chat_cube, end_arg_key="prompt", start_arg_key=None, kind="MAP")
 
     #     chatGPT → straight_result (feed “straight-result”)
     chat_cube.add_edge_to(straight_result, end_arg_key=None, start_arg_key=None, kind="REGULAR")
@@ -104,5 +107,31 @@ def get_parent_flow ():
 
 def test_run_complete ():
     parent_f = get_parent_flow()
-    parent_f.run_full_with_args(lambda m: print(m), {})
+    result_found = False
+    def callback (m):
+        print(m)
+        if m["type"] == "EXECUTION_DONE" and "nest-result" in m["results"]:
+            assert m["results"]["nest-result"] == ["Bears are funny (GPT)"] * 2
+            result_found = True
+    parent_f.run_full_with_args(callback, {})
+    assert result_found
+
+def test_tagstack ():
+    parent_f = get_parent_flow()
+    found = False
+    
+    def callback (m):
+        print(m)
+        if m["type"] == "SUCCESSFUL_CUBE_EXECUTION" and "Print out tagstack--->" in m["console-output"]:
+            tag_stack = json.loads(m["console-output"].split("--->")[-1])
+
+            if len(tag_stack) == 2:
+                assert tag_stack[0]["main"] == ["parent_tag"]
+                assert len(tag_stack[0]["cubes"]) == 2
+                assert tag_stack[1]["main"] == ["sub_tag"]
+                assert len(tag_stack[1]["cubes"]) == 4
+                found = True
+
+    parent_f.run_full_with_args(callback, {})
+    assert found
 

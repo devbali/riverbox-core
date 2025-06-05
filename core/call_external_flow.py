@@ -20,6 +20,9 @@ def call_external_flow (body_flow, parent_metadata: dict, callback, args, global
         body["flow"] = body_flow
         body["metadata"] = body_flow["metadata"]
         body["env"] = body_flow["env"]
+        body["tags"] = body_flow["tags"]
+        body["tag-stack"] = body_flow["tag-stack"]
+
         sub_flow = FlowExecution(body, parent_metadata_for_child, callback, "FULL", None, None)
         return sub_flow.execute(args, worker_assigned=True)
 

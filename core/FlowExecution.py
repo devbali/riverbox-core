@@ -8,7 +8,7 @@ class FlowExecution:
     def __init__(self, riverbox_flow_full, flow_metadata, callback_function, execution_type, cube_id, debug_state: 'FlowExecution'):
         self.flow_metadata = flow_metadata
         self.riverbox_metadata = riverbox_flow_full["metadata"]
-        print("init happening, riverbox metadata", self.riverbox_metadata)
+        print("init happening, riverbox tagstack", riverbox_flow_full.get("tag-stack", [[]]))
         riverbox_flow = riverbox_flow_full["flow"]
 
         self.tags = riverbox_flow_full.get("tags", [])
@@ -219,8 +219,4 @@ class FlowExecution:
     
     def get_client_riverbox_metadata (self):
         riverbox_meta = {"tags": self.tags, "tag-stack": self.tag_stack}
-        for c in self.cubes:
-            cube_meta = c.get_client_box_metadata_for_flow()
-            riverbox_meta[cube_meta["id"]] = cube_meta
-        
         return riverbox_meta

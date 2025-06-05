@@ -437,7 +437,7 @@ class Flow:
         }
         
         if indent == -1:
-            #print(json.dumps(full, indent=4))
+            print(json.dumps(full, indent=4))
             return full
         return json.dumps(full, indent=indent)
     
