@@ -15,12 +15,15 @@ from core.run import main
 _REGISTERED_RBX_FUNCTIONS: Dict[Any, Dict[str, Any]] = {}
 
 
-def rbx_function(params: Dict[str, Any]):
+def rbx_function(params: Dict[str, Any] = None):
     """
     Decorator to mark a Python function as a “riverbox cube.” 
     The `params` dict can contain keys like “kind”, “name”, “arg-key”, “default-value”, etc.
     We store it in a global registry so that Flow.add_cube(fn) can look it up.
     """
+    if params is None:
+        params = {}
+
     def decorator(fn):
         _REGISTERED_RBX_FUNCTIONS[fn] = params.copy()
         return fn
@@ -437,10 +440,9 @@ class Flow:
         }
         
         if indent == -1:
-            print(json.dumps(full, indent=4))
+            #print(json.dumps(full, indent=4))
             return full
         return json.dumps(full, indent=indent)
     
     def run_full_with_args (self, callback, args):
         return main(self.to_json(-1), get_invocation_metadata(), callback, "FULL",  args=args)
-

@@ -4,20 +4,14 @@ import json
 
 def get_sub_flow ():
     # 1) Define two Python functions and mark them as cubes
-    @rbx_function({
-        "kind": "REGULAR",
-        "name": "makeJokePrompt",
-    })
-    def make_joke_prompt(topics):
+    @rbx_function()
+    def make_joke_prompt(rbxm, topics):
         print("RUNNING ON TOPIC", topics)
         rbxm.output = f"Write a joke about {topics[0]}"
 
 
-    @rbx_function({
-        "kind": "REGULAR",
-        "name": "chatGPT",
-    })
-    def chat_gpt(prompt):
+    @rbx_function()
+    def chat_gpt(rbxm, prompt):
         import time
         import json
         time.sleep(0.2)
@@ -105,11 +99,19 @@ def get_parent_flow ():
 
     return parent_f
 
+def print_console_outputs (m):
+    if "console-output" in m:
+        print (m["console-output"])
+    if "error-message" in m:
+        print (m["error-message"])
+
 def test_run_complete ():
     parent_f = get_parent_flow()
     result_found = False
     def callback (m):
-        print(m)
+        nonlocal result_found
+        #print(m)
+        print_console_outputs(m)
         if m["type"] == "EXECUTION_DONE" and "nest-result" in m["results"]:
             assert m["results"]["nest-result"] == ["Bears are funny (GPT)"] * 2
             result_found = True
@@ -121,7 +123,9 @@ def test_tagstack ():
     found = False
     
     def callback (m):
-        print(m)
+        nonlocal found
+        #print(m)
+        print_console_outputs(m)
         if m["type"] == "SUCCESSFUL_CUBE_EXECUTION" and "Print out tagstack--->" in m["console-output"]:
             tag_stack = json.loads(m["console-output"].split("--->")[-1])
 
