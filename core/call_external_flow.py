@@ -35,7 +35,7 @@ def call_external_flow (body_flow, parent_metadata: dict, callback, args, global
         "layer": layer,
         "args": args,
         "parent-env": env,
-        "parent-cube-execution-id": parent_cubeexecution_id,
-        "sub-flow-version-id": body_flow.get("sub-flow-version-id"),
+        "parent-cube-execution-id": str(parent_cubeexecution_id) if parent_cubeexecution_id else None,
+        "sub-flow-version-id": str(body_flow["sub-flow-version-id"]) if "sub-flow-version-id" in body_flow else None,
         "invocation-id": parent_metadata["invocation-id"]
     })
