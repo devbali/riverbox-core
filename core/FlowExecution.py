@@ -187,7 +187,7 @@ class FlowExecution:
             "results": self.results
         })
 
-    def execute(self, args, worker_assigned=False):
+    def execute(self, args, worker_assigned=False, parent_cubeexecution_id=None, flow_version_id=None):
         self.update_manager({
             "type": "NEW_EXECUTION",
             "execution-id": self.execution_id,
@@ -196,6 +196,8 @@ class FlowExecution:
             "execution-type": self.execution_type,
             "invocation-id": self.flow_metadata["invocation-id"],
             "worker-assigned": worker_assigned,
+            "parent-cube-execution-id": parent_cubeexecution_id,
+            "flow-version-id": flow_version_id,
             "env": self.env if worker_assigned else None,
             "time": time.time()
         })

@@ -9,7 +9,7 @@ def get_uuid ():
 
     return uuid_str
 
-def call_external_flow (body_flow, parent_metadata: dict, callback, args, global_execution_count, layer, env):
+def call_external_flow (body_flow, parent_metadata: dict, callback, args, global_execution_count, layer, env, parent_cubeexecution_id):
     from .FlowExecution import FlowExecution
 
     if body_flow["run-on-same"]:
@@ -24,7 +24,7 @@ def call_external_flow (body_flow, parent_metadata: dict, callback, args, global
         body["tag-stack"] = body_flow["tag-stack"]
 
         sub_flow = FlowExecution(body, parent_metadata_for_child, callback, "FULL", None, None)
-        return sub_flow.execute(args, worker_assigned=True)
+        return sub_flow.execute(args, worker_assigned=True, parent_cubeexecution_id=parent_cubeexecution_id, flow_version_id=body_flow["sub-flow-version-id"])
 
     # Send it out to cluster manager
     # For now, wait till execution is complete
@@ -35,5 +35,7 @@ def call_external_flow (body_flow, parent_metadata: dict, callback, args, global
         "layer": layer,
         "args": args,
         "parent-env": env,
+        "parent-cube-execution-id": parent_cubeexecution_id,
+        "sub-flow-version-id": body_flow.get("sub-flow-version-id"),
         "invocation-id": parent_metadata["invocation-id"]
     })

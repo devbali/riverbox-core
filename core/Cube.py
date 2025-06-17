@@ -95,7 +95,7 @@ class CubeExecutionLayer:
             return None
         
         if self.cube.kind == "FLOW":
-            self.return_value = call_external_flow(*self.cube.sub_flow_args, self.args, self.cube.global_execution_count, self.layer, flow.env)
+            self.return_value = call_external_flow(*self.cube.sub_flow_args, self.args, self.cube.global_execution_count, self.layer, flow.env, self.execution_id)
         
         elif self.cube.kind == "PARAM":
             if self.cube.arg_key and self.cube.arg_key in flow.args:
