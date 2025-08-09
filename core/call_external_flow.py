@@ -15,7 +15,7 @@ def call_external_flow (body_flow, parent_metadata: dict, callback, args, global
     if body_flow["run-on-same"]:
         parent_metadata_for_child = parent_metadata.copy()
         parent_metadata_for_child["execution-id"] = get_uuid()
-        parent_metadata_for_child["flow-id"] = body_flow["sub-flow-id"]
+        parent_metadata_for_child["flow-id"] = body_flow["sub-flow-version-id"]
         body = {}
         body["flow"] = body_flow
         body["metadata"] = body_flow["metadata"]

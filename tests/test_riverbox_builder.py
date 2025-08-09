@@ -25,7 +25,7 @@ def get_sub_flow ():
     sub_f = Flow(
         name="Sleep 0.2",
         run_on_same=True,
-        sub_flow_id="",
+        sub_flow_version_id="",
         riverbox_version=1.0,
         language="python",
         version="3.12",

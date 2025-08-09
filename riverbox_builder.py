@@ -1,5 +1,14 @@
 # riverbox_builder.py
 
+import sys
+import os
+
+# Add the parent directory of this file to the Python path.
+# This ensures that `core` and `riverbox` modules can be found.
+_current_dir = os.path.dirname(os.path.abspath(__file__))
+if _current_dir not in sys.path:
+    sys.path.append(_current_dir)
+
 import uuid
 import inspect
 import json
@@ -57,7 +66,7 @@ class Cube:
         inner_cubes: Optional[List["Cube"]] = None,
         execution_id: Optional[str] = None,
         run_on_same: Optional[bool] = None,
-        sub_flow_id: Optional[str] = None,
+        sub_flow_version_id: Optional[str] = None,
         env: Optional[Dict[str, Any]] = None,
     ):
         self.id: str = id or _new_id()
@@ -76,14 +85,14 @@ class Cube:
         # Extra FLOW‐specific fields:
         self.execution_id: Optional[str] = execution_id
         self.run_on_same: Optional[bool] = run_on_same
-        self.sub_flow_id: Optional[str] = sub_flow_id
+        self.sub_flow_version_id: Optional[str] = sub_flow_version_id
         self.env: Dict[str, Any] = env.copy() if env else {}
 
     def add_edge_to(
         self,
         target: "Cube",
         *,
-        end_arg_key: Any,
+        end_arg_key: Any = None,
         start_arg_key: Any = None,
         kind: str = "REGULAR",
         edge_id: Optional[str] = None,
@@ -103,6 +112,7 @@ class Cube:
             "kind": kind,
         }
         self.start_edges.append(edge)
+        return eid
 
     def _compute_this_flow_summary(self) -> Dict[str, Any]:
         """
@@ -166,12 +176,12 @@ class Cube:
             if self.arg_key is not None:
                 base["arg-key"] = self.arg_key
 
-        # FLOW cubes: we must include execution-id, run-on-same, sub-flow-id, env, tags, and nested cubes
+        # FLOW cubes: we must include execution-id, run-on-same, sub-flow-version-id, env, tags, and nested cubes
         if self.kind == "FLOW":
             if self.execution_id is not None:
                 base["execution-id"] = self.execution_id
             base["run-on-same"] = self.run_on_same if self.run_on_same is not None else False
-            base["sub-flow-id"] = self.sub_flow_id if self.sub_flow_id is not None else ""
+            base["sub-flow-version-id"] = self.sub_flow_version_id if self.sub_flow_version_id is not None else ""
             if self.env:
                 base["env"] = self.env
             else:
@@ -220,7 +230,7 @@ class Flow:
         name: Optional[str] = None,
         execution_id: Optional[str] = None,
         run_on_same: Optional[bool] = None,
-        sub_flow_id: Optional[str] = None,
+        sub_flow_version_id: Optional[str] = None,
         riverbox_version: float = 1.0,
         language: str = "python",
         version: str = "3.11",
@@ -232,7 +242,7 @@ class Flow:
         self.name: Optional[str] = name or ""
         self.execution_id: Optional[str] = execution_id
         self.run_on_same: Optional[bool] = run_on_same
-        self.sub_flow_id: Optional[str] = sub_flow_id
+        self.sub_flow_version_id: Optional[str] = sub_flow_version_id
 
         # Top‐level metadata (for either a top‐level Flow → JSON, or a nested Flow)
         self.metadata: Dict[str, Any] = {
@@ -248,6 +258,23 @@ class Flow:
 
         # Internally store all cubes (including nested FLOWS as Cube(kind="FLOW"))
         self._cubes: List[Cube] = []
+    
+    def __getitem__(self, cube_id):
+        cubes =  [cube for cube in self._cubes if cube.id == cube_id]
+        if cubes:
+            return cubes[0]
+    
+    def nodes (self):
+        return self._cubes
+    
+    def node_ids(self):
+        return [cube.id for cube in self._cubes]
+    
+    def edges (self):
+        edges = []
+        for cube in self._cubes:
+            edges += cube.start_edges
+        return edges
 
     def add_cube(self, spec: Any) -> Cube:
         """
@@ -321,7 +348,7 @@ class Flow:
                         tags=sc.get("tags"),
                         execution_id=sc.get("execution-id"),
                         run_on_same=sc.get("run-on-same"),
-                        sub_flow_id=sc.get("sub-flow-id"),
+                        sub_flow_version_id=sc.get("sub-flow-version-id"),
                         env=sc.get("env"),
                         inner_cubes=[
                             # You could recurse deeper if needed. For simplicity, 
@@ -337,7 +364,7 @@ class Flow:
                                 tags=subsc.get("tags"),
                                 execution_id=subsc.get("execution-id"),
                                 run_on_same=subsc.get("run-on-same"),
-                                sub_flow_id=subsc.get("sub-flow-id"),
+                                sub_flow_version_id=subsc.get("sub-flow-version-id"),
                                 env=subsc.get("env", {}),
                                 inner_cubes=[],
                             )
@@ -348,7 +375,7 @@ class Flow:
                 ] if kind == "FLOW" else [],
                 execution_id=spec.get("execution-id"),
                 run_on_same=spec.get("run-on-same"),
-                sub_flow_id=spec.get("sub-flow-id"),
+                sub_flow_version_id=spec.get("sub-flow-version-id"),
                 env=spec.get("env"),
             )
             if "start-edges" in spec:
@@ -371,7 +398,7 @@ class Flow:
                 inner_cubes=list(spec._cubes),
                 execution_id=spec.execution_id or _new_id(),
                 run_on_same=spec.run_on_same if spec.run_on_same is not None else False,
-                sub_flow_id=spec.sub_flow_id or "",
+                sub_flow_version_id=spec.sub_flow_version_id or "",
                 env=spec.env,
             )
             self._cubes.append(cube)
@@ -384,6 +411,29 @@ class Flow:
                 "  • a dict describing a cube, or\n"
                 "  • a Flow object (to embed as kind='FLOW')."
             )
+
+    def remove_cube(self, cube_id: str):
+        """
+        Removes a cube by its ID and also removes any edges pointing to it.
+        """
+        # Remove the cube with the matching ID
+        self._cubes = [cube for cube in self._cubes if cube.id != cube_id]
+
+        # Iterate through the remaining cubes to remove edges pointing to the deleted cube
+        for cube in self._cubes:
+            cube.start_edges = [edge for edge in cube.start_edges if edge.get("end") != cube_id]
+    
+    def remove_edge_by_id (self, edge_id: str):
+        """
+        Removes an edge by its ID.
+        """
+        for cube in self._cubes:
+            for edge in cube.start_edges:
+                if edge["id"] == edge_id:
+                    cube.start_edges.remove(edge)
+    
+    def to_dict (self):
+        return self.to_json(-1)
 
     def to_json(self, indent: int = 2) -> str:
         """

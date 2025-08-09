@@ -27,7 +27,7 @@ def get_flow ():
 
     flow = Flow(
         name="Cyclical",
-        sub_flow_id="",
+        sub_flow_version_id="",
         riverbox_version=1.0,
         language="python",
         version="3.12",

@@ -3,17 +3,20 @@ import asyncio
 import threading
 import time
 import os
+import dill
 
 class FlowExecution:
-    def __init__(self, riverbox_flow_full, flow_metadata, callback_function, execution_type, cube_id, debug_state: 'FlowExecution'):
-        self.flow_metadata = flow_metadata
+    def __init__(self, riverbox_flow_full, current_exec_metadata, callback_function, execution_type, cube_id, debug_state: 'FlowExecution', dump_state_folder=None):
+        self.current_execution_metadata = current_exec_metadata
         self.riverbox_metadata = riverbox_flow_full["metadata"]
         riverbox_flow = riverbox_flow_full["flow"]
 
         self.tags = riverbox_flow_full.get("tags", [])
         self.tag_stack =  riverbox_flow_full.get("tag-stack", [[]])
-        self.execution_id = flow_metadata["execution-id"]
-        self.flow_id = flow_metadata["flow-id"]
+        self.execution_id = current_exec_metadata["execution-id"]
+        self.flow_id = current_exec_metadata["flow-id"]
+        
+        self.dump_state_folder = dump_state_folder
 
         self.execution_type = execution_type
         assert self.execution_type in ["FULL", "ONLY", "UPTO", "DEBUG_ONLY", "DEBUG_UPTO", "DEBUG_NEXT", "DEBUG_START"]
@@ -29,7 +32,7 @@ class FlowExecution:
             self.cubes: list[CubeExecution] = []
             for c in riverbox_flow["cubes"]:
                 if c["id"] in debug_state.latest_cubes_lookup:
-                    self.cubes.append(debug_state.latest_cubes_lookup[c['id']].clone_for_new_debug_execution(c))
+                    self.cubes.append(debug_state.latest_cubes_lookup[c['id']].clone_for_new_debug_execution(c, self))
                 else:
                     self.cubes.append(CubeExecution(c, self))
 
@@ -49,7 +52,8 @@ class FlowExecution:
             self.global_execution_count = 0
         
         self.latest_cubes_lookup = {c.id: c for c in self.cubes} # latest_cubes_lookup only has latest executions for quick lookup
-        
+        print("latest cube lookup: ", self.latest_cubes_lookup)
+
         self.execution_main_cube_id = cube_id
         if self.execution_type == "UPTO" or self.execution_type == "DEBUG_UPTO":
             self.critical_path_upto = self.calculate_critical_path_upto(cube_id)
@@ -60,6 +64,9 @@ class FlowExecution:
         
         self.scheduler_lock = threading.Lock()
         self.callback_lock = threading.Lock()
+    
+    def is_debug (self):
+        return self.execution_type in ["DEBUG_START", "DEBUG_ONLY", "DEBUG_UPTO", "DEBUG_NEXT"]
 
     def calculate_critical_path_upto (self, cube_id):
         all_nodes_ids = set()
@@ -151,6 +158,13 @@ class FlowExecution:
 
     async def run_all_possible(self, single):
         executables = self.find_executables()
+        if self.dump_state_folder is not None:
+            with self.global_vars_lock:
+                # use dill to dump self.global_vars to file
+                dump_path = f"global_vars_{self.global_execution_count}.dill"          # any filename works
+                with open(dump_path, "wb") as f:    # write‑binary mode
+                    dill.dump(self.global_vars, f)
+                
         if executables: self.global_execution_count += 1
         tasks = []
         for starter in executables:
@@ -194,7 +208,7 @@ class FlowExecution:
             "flow-id": self.flow_id,
             "args": args,
             "execution-type": self.execution_type,
-            "invocation-id": self.flow_metadata["invocation-id"],
+            "invocation-id": self.current_execution_metadata["invocation-id"],
             "worker-assigned": worker_assigned,
             "parent-cube-execution-id": parent_cubeexecution_id,
             "flow-version-id": flow_version_id,

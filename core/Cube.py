@@ -153,7 +153,7 @@ class CubeExecution:
             self.code = body["code"]
         
         if self.kind == "FLOW":
-            self.sub_flow_args = [body, flow.flow_metadata, flow.callback_function]
+            self.sub_flow_args = [body, flow.current_execution_metadata, flow.callback_function]
 
         if self.kind == "PARAM":
             try:
@@ -178,6 +178,9 @@ class CubeExecution:
         self.return_values = []
         self.args = Arg(False, None, None)
         
+        self.return_value = None
+        self.map_type = False
+        
         # Maximum 100 layers at the same time
         self.layer_semaphore = threading.Semaphore(100)
 
@@ -193,8 +196,9 @@ class CubeExecution:
             "edges-to": [e.get_client_edge_metadata() for e in self.start_edges]
         }
 
-    def clone_for_new_debug_execution (self, new_body):
+    def clone_for_new_debug_execution (self, new_body, new_flow_obj):
         if has_same_underlying_cube(self.body, new_body):
+            self.flow = new_flow_obj
             return self
         c = CubeExecution(new_body, self.flow, self.global_execution_count)
 
@@ -204,7 +208,8 @@ class CubeExecution:
         c.pre_execution_error = self.pre_execution_error
 
         c.num_layers = self.num_layers
-        c.return_values = self.return_values
+        c.return_value = self.return_value
+        c.map_type = self.map_type
         c.args = self.args
 
         return c
@@ -245,8 +250,37 @@ class CubeExecution:
             layer_num += 1
     
         return [(await task) for task in tasks]
+    
+    def propagate_return_value_along_edge (self, edge, next_function=None):
+        # Based on return value of current Cube and the edge to the next cube, create
+        #   the value to be fed to the arg in the next cube
+        
+        if next_function is None:
+            next_function = self.flow.latest_cubes_lookup[edge.end]
 
-    def post_successful_execution (self, flow, return_value=None, map_type=False):
+        if edge.start_arg_key is None:
+            return_value_on_edge = self.return_value
+        elif self.map_type:
+            return_value_on_edge = []
+            for layer_rv in self.return_value:
+                if isinstance(layer_rv, dict) and edge.start_arg_key in layer_rv:
+                    return_value_on_edge.append(layer_rv[edge.start_arg_key])
+                else:
+                    return_value_on_edge.append(layer_rv)
+        elif isinstance(self.return_value, dict) and edge.start_arg_key in self.return_value:
+            return_value_on_edge = self.return_value[edge.start_arg_key]
+        else:
+            next_function.dont_run = True
+
+        if edge.end_arg_key is not None and not next_function.dont_run:
+            next_arg = Arg(edge.kind == "MAP", return_value_on_edge, edge.end_arg_key)
+            if not isinstance(next_function.args, dict):
+                next_function.args = {}
+            next_function.args[edge.end_arg_key] = next_arg
+        elif not next_function.dont_run:
+            next_function.args = Arg(edge.kind == "MAP", return_value_on_edge, edge.end_arg_key)
+
+    def post_successful_execution (self, flow):
         self.undone = False
 
         if self.kind in ["REGULAR", "PARAM", "FLOW"]: # None of this needed for result
@@ -254,29 +288,7 @@ class CubeExecution:
                 next_function = flow.latest_cubes_lookup[edge.end]
                 next_function.undone = True
                 
-                # Based on return value of current Cube and the edge to the next cube, create
-                #   the value to be fed to the arg in the next cube
-                if edge.start_arg_key is None:
-                    return_value_on_edge = return_value
-                elif map_type:
-                    return_value_on_edge = []
-                    for layer_rv in return_value:
-                        if isinstance(layer_rv, dict) and edge.start_arg_key in layer_rv:
-                            return_value_on_edge.append(layer_rv[edge.start_arg_key])
-                        else:
-                            return_value_on_edge.append(layer_rv)
-                elif isinstance(return_value, dict) and edge.start_arg_key in return_value:
-                    return_value_on_edge = return_value[edge.start_arg_key]
-                else:
-                    next_function.dont_run = True
-
-                if edge.end_arg_key is not None and not next_function.dont_run:
-                    next_arg = Arg(edge.kind == "MAP", return_value_on_edge, edge.end_arg_key)
-                    if not isinstance(next_function.args, dict):
-                        next_function.args = {}
-                    next_function.args[edge.end_arg_key] = next_arg
-                elif not next_function.dont_run:
-                    next_function.args = Arg(edge.kind == "MAP", return_value_on_edge, edge.end_arg_key)
+                self.propagate_return_value_along_edge(edge, next_function)
 
         self.done = True
 
@@ -284,6 +296,14 @@ class CubeExecution:
         layer_args = [dict()]
         map_type = False
         add_to_each = lambda arr, k,v: [{**kw, k:v} for kw in arr]
+        
+        if self.flow.is_debug():
+            # try to find such an edge, if found, repropogate arguments
+            for cube in self.flow.latest_cubes_lookup.values():
+                for edge in cube.start_edges:
+                    if edge.end == self.id:
+                        # Match found, repropagate!
+                        cube.propagate_return_value_along_edge(edge)
 
         if isinstance(self.args, Arg):
             if self.args.value is None:
@@ -330,15 +350,15 @@ class CubeExecution:
             assert isinstance(self.args, Arg), self.args
             layer_args = self.args.value
         else:
-            map_type, layer_args = self.get_args_layers()
+            self.map_type, layer_args = self.get_args_layers()
             self.num_layers = len(layer_args)
 
         if self.kind == "RESULT":
             flow.add_result(self, layer_args)
-            return_value = None
-        elif not map_type:
-            return_value = CubeExecutionLayer(self, layer_args[0], 1).execute(flow.global_vars, flow)
+            self.return_value = None
+        elif not self.map_type:
+            self.return_value = CubeExecutionLayer(self, layer_args[0], 1).execute(flow.global_vars, flow)
         else:
-            return_value = asyncio.run(self.execute_multilayer(flow.global_vars, layer_args, flow))
+            self.return_value = asyncio.run(self.execute_multilayer(flow.global_vars, layer_args, flow))
 
-        self.post_successful_execution(flow, return_value, map_type)
+        self.post_successful_execution(flow)

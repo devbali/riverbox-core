@@ -45,7 +45,7 @@
           "description": ""
         },
         "run-on-same": true,
-        "sub-flow-id": "",
+        "sub-flow-version-id": "",
         "env": {},
         "tags": ["sub_tag"],
         "tag-stack": [
