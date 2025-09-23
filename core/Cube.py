@@ -16,6 +16,7 @@ class Edge:
         self.end_arg_key: str | int = edge_body["end-arg-key"]
         self.kind = edge_body["kind"]
         self.start_arg_key: str = edge_body["start-arg-key"]
+        self.fresh = False
 
     def get_client_edge_metadata (self):
         return {
@@ -171,7 +172,6 @@ class CubeExecution:
         self.dont_run = False
         self.started = False
         self.done = False
-        self.undone = False
         self.pre_execution_error = ""
         
         self.num_layers = 0
@@ -200,7 +200,7 @@ class CubeExecution:
         if has_same_underlying_cube(self.body, new_body):
             self.flow = new_flow_obj
             return self
-        c = CubeExecution(new_body, self.flow, self.global_execution_count)
+        c = CubeExecution(new_body, new_flow_obj, self.global_execution_count)
 
         c.dont_run = self.dont_run
         c.started = self.started
@@ -250,13 +250,15 @@ class CubeExecution:
             layer_num += 1
     
         return [(await task) for task in tasks]
-    
+
     def propagate_return_value_along_edge (self, edge, next_function=None):
         # Based on return value of current Cube and the edge to the next cube, create
         #   the value to be fed to the arg in the next cube
         
         if next_function is None:
             next_function = self.flow.latest_cubes_lookup[edge.end]
+
+        edge.fresh = True
 
         if edge.start_arg_key is None:
             return_value_on_edge = self.return_value
@@ -267,28 +269,30 @@ class CubeExecution:
                     return_value_on_edge.append(layer_rv[edge.start_arg_key])
                 else:
                     return_value_on_edge.append(layer_rv)
-        elif isinstance(self.return_value, dict) and edge.start_arg_key in self.return_value:
+        elif isinstance(self.return_value, dict) and edge.start_arg_key in self.return_value and self.return_value[edge.start_arg_key] is not None:
             return_value_on_edge = self.return_value[edge.start_arg_key]
         else:
+            edge.fresh = False
             next_function.dont_run = True
 
-        if edge.end_arg_key is not None and not next_function.dont_run:
+        if edge.end_arg_key is not None and edge.fresh:
             next_arg = Arg(edge.kind == "MAP", return_value_on_edge, edge.end_arg_key)
             if not isinstance(next_function.args, dict):
                 next_function.args = {}
             next_function.args[edge.end_arg_key] = next_arg
-        elif not next_function.dont_run:
+        elif edge.fresh:
             next_function.args = Arg(edge.kind == "MAP", return_value_on_edge, edge.end_arg_key)
 
     def post_successful_execution (self, flow):
-        self.undone = False
-
         if self.kind in ["REGULAR", "PARAM", "FLOW"]: # None of this needed for result
             for edge in self.start_edges:
-                next_function = flow.latest_cubes_lookup[edge.end]
-                next_function.undone = True
-                
+                next_function = flow.latest_cubes_lookup[edge.end]                
                 self.propagate_return_value_along_edge(edge, next_function)
+
+        for cube in flow.latest_cubes_lookup.values():
+            for edge in cube.start_edges:
+                if edge.end == self.id:
+                    edge.fresh = False
 
         self.done = True
 

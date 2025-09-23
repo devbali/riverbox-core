@@ -432,8 +432,118 @@ class Flow:
                 if edge["id"] == edge_id:
                     cube.start_edges.remove(edge)
     
-    def to_dict (self):
+    def to_dict(self):
         return self.to_json(-1)
+
+
+    def to_cube_array (self) -> List[Dict[str, Any]]:
+        """
+        Returns a minimal list of cubes with edges embedded within their source cubes.
+        This representation is optimized for agent consumption and understanding.
+        """
+        minimal_result = []
+
+        for cube in self._cubes:
+            cube_info = {
+                "id": cube.id,
+                "kind": cube.kind,
+                "name": cube.name
+            }
+            
+            # Only include additional fields if they're set and relevant
+            if cube.code:
+                cube_info["code"] = cube.code
+            if cube.arg_key is not None:
+                cube_info["arg-key"] = cube.arg_key
+            if cube.default_value is not None:
+                cube_info["default-value"] = cube.default_value
+            
+            # Add edges as part of the cube
+            if cube.start_edges:
+                edges = []
+                for edge in cube.start_edges:
+                    edge_info = {
+                        "id": edge["id"],
+                        "end": edge["end"]
+                    }
+                    # Only include additional edge information if set
+                    if edge.get("end-arg-key"):
+                        edge_info["end-arg-key"] = edge["end-arg-key"]
+                    if edge.get("start-arg-key"):
+                        edge_info["start-arg-key"] = edge["start-arg-key"]
+                    if edge.get("kind"):
+                        edge_info["kind"] = edge["kind"]
+                    edges.append(edge_info)
+                cube_info["edges"] = edges
+
+            minimal_result.append(cube_info)
+
+        return minimal_result
+
+    def slice_upto(self, cube_id: str):
+        """
+        Return a new Flow that includes only the cubes and edges leading up to (and including) cube_id,
+        and returns its minimal dictionary representation.
+        """
+        # Step 1: Find all cubes that lead to cube_id
+        included_cubes = set()
+        to_visit = {cube_id}
+
+        while to_visit:
+            current_id = to_visit.pop()
+            if current_id in included_cubes:
+                continue
+            included_cubes.add(current_id)
+
+            # Find cubes that have edges pointing to current_cube
+            for cube in self._cubes:
+                for edge in cube.start_edges:
+                    if edge.get("end") == current_id and cube.id not in included_cubes:
+                        to_visit.add(cube.id)
+
+        # Step 2: Create a new Flow with only the included cubes
+        sliced_flow = Flow(
+            name=self.name,
+            execution_id=self.execution_id,
+            run_on_same=self.run_on_same,
+            sub_flow_version_id=self.sub_flow_version_id,
+            riverbox_version=self.metadata.get("riverbox-version", 1.0),
+            language=self.metadata.get("language", "python"),
+            version=self.metadata.get("version", "3.11"),
+            tags=self.tags,
+            env=self.env,
+            args=self.args
+        )
+
+        # Copy included cubes to new flow
+        for cube in self._cubes:
+            if cube.id in included_cubes:
+                # Create a new cube with same properties
+                new_cube = Cube(
+                    id=cube.id,
+                    kind=cube.kind,
+                    name=cube.name,
+                    code=cube.code,
+                    arg_key=cube.arg_key,
+                    default_value=cube.default_value,
+                    metadata=cube.metadata,
+                    tags=cube.tags,
+                    inner_cubes=cube.inner_cubes,
+                    execution_id=cube.execution_id,
+                    run_on_same=cube.run_on_same,
+                    sub_flow_version_id=cube.sub_flow_version_id,
+                    env=cube.env
+                )
+                
+                # Only copy edges that connect to included cubes
+                for edge in cube.start_edges:
+                    if edge.get("end") in included_cubes:
+                        new_cube.start_edges.append(edge.copy())
+                
+                sliced_flow._cubes.append(new_cube)
+
+        # Return minimal representation of the sliced flow
+        return sliced_flow.to_minimal_dict()
 
     def to_json(self, indent: int = 2) -> str:
         """

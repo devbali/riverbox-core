@@ -17,6 +17,7 @@ class FlowExecution:
         self.flow_id = current_exec_metadata["flow-id"]
         
         self.dump_state_folder = dump_state_folder
+        self.num_running_cubes = 0
 
         self.execution_type = execution_type
         assert self.execution_type in ["FULL", "ONLY", "UPTO", "DEBUG_ONLY", "DEBUG_UPTO", "DEBUG_NEXT", "DEBUG_START"]
@@ -52,15 +53,18 @@ class FlowExecution:
             self.global_execution_count = 0
         
         self.latest_cubes_lookup = {c.id: c for c in self.cubes} # latest_cubes_lookup only has latest executions for quick lookup
-        print("latest cube lookup: ", self.latest_cubes_lookup)
 
         self.execution_main_cube_id = cube_id
         if self.execution_type == "UPTO" or self.execution_type == "DEBUG_UPTO":
+            # If an upto is being called, artificially mark all the start nodes
+            # in the critical path as not done, so that they can be executed
+
             self.critical_path_upto = self.calculate_critical_path_upto(cube_id)
-            if self.execution_type == "DEBUG_UPTO":
-                for e in self.critical_path_upto:
-                    # mark all undone
-                    self.latest_cubes_lookup[e].undone = True
+
+            for id, cube in self.critical_path_upto.items():
+                cube.done = False
+                cube.started = False
+                cube.dont_run = False
         
         self.scheduler_lock = threading.Lock()
         self.callback_lock = threading.Lock()
@@ -118,54 +122,96 @@ class FlowExecution:
             elif self.execution_type in ["UPTO", "DEBUG_UPTO"]:
                 executables = {**self.critical_path_upto}
 
-            #print("Executables step 1", executables)
+            # Find nodes with no incoming edges, start_nodes that are not done, along with 
+            # nodes with all fresh incoming edges, fresh_nodes
+
+            start_nodes = {id: cube for id, cube in executables.items() if not cube.done}
+            fresh_node_inputs = {} # keep track of input arg keys and whether at least one fresh edge points to it
+            
             for cube_id in list(executables.keys()):
                 cube = self.latest_cubes_lookup[cube_id]
-                #print(executables, cube_id, cube.done, cube.undone)
 
-
-                # If a cube is done, should not be executed, except if it is also undone (to allow cycles)
-                if cube.done and not cube.undone and cube_id in executables:
-                    del executables[cube_id]
-                    continue
-
-                # If an undone cube points to something it can not be executed
                 for edge in cube.start_edges:
-                    if edge.end in executables:
-                        del executables[edge.end]
+                    if edge.end in start_nodes:
+                        del start_nodes[edge.end]
+                    
+                    if edge.end not in executables:
+                        continue
 
-            #print("Executables step 2", executables)
-            for id in list(executables.keys()):
+                    if edge.end not in fresh_node_inputs:
+                        fresh_node_inputs[edge.end] = {}
+                    
+                    inputs = fresh_node_inputs[edge.end]
+
+                    if edge.fresh:
+                        inputs[edge.end_arg_key] = True
+                    elif edge.end_arg_key not in inputs:
+                        inputs[edge.end_arg_key] = False
+
+            fresh_nodes = {}
+            for id, inputs in fresh_node_inputs.items():
+                all_fresh = True
+                for k, v in inputs.items():
+                    if not v:
+                        all_fresh = False
+                        break
+                if all_fresh:
+                    fresh_nodes[id] = self.latest_cubes_lookup[id]
+
+            potential_executables = {**start_nodes, **fresh_nodes}
+            print("Executables step 1", executables, "start_nodes", start_nodes, "fresh_nodes", fresh_nodes, "fresh_node_inputs", fresh_node_inputs)
+
+            for id in list(potential_executables.keys()):
                 # Either the cube is to not run due to a None in input
-                # Or the cube is to not because it has already started and 
-                #   it's not the case that its a done then undone situation (cycle/redone in Debug more)
-                if executables[id].dont_run or (executables[id].started and not (executables[id].done and executables[id].undone)):
-                    del executables[id]
+                # Or the cube is to not because it has already started
+                if potential_executables[id].dont_run or (potential_executables[id].started and not potential_executables[id].done):
+                    del potential_executables[id]
 
-        #print("Executables step 3", executables)
-        return executables
+        print("Returning Executables", potential_executables)
+        return potential_executables
 
     def update_manager(self, message):
         with self.callback_lock:
             self.callback_function(message)
 
     async def run_cube(self, func_id, single):
+        self.num_running_cubes += 1
         cube = self.latest_cubes_lookup[func_id]
         cube.global_execution_count = self.global_execution_count
         await asyncio.to_thread(self.latest_cubes_lookup[func_id].execute, self)
         if not single:
             await self.run_all_possible(False)
+        self.num_running_cubes -= 1
+
+    def _dump_file_name (self, counter):
+        if self.dump_state_folder is None:
+            return None
+        if not os.path.exists(self.dump_state_folder):
+            os.makedirs(self.dump_state_folder)
+        return os.path.join(self.dump_state_folder, f"global_vars_after_{counter}.dill")
+
+    def _dump_state (self, counter):
+        with self.global_vars_lock:
+            # use dill to dump self.global_vars to file
+            with open(self._dump_file_name(counter), "wb") as f:    # write‑binary mode
+                dill.dump(self, f)
+
+    def get_flow_from_checkpoint (self) -> "FlowExecution":
+        if self.dump_state_folder is None:
+            return None
+        file_name = self._dump_file_name(self.global_execution_count - 1)
+        if not os.path.exists(file_name):
+            return None
+        with open(file_name, "rb") as f:    # read‑binary mode
+            flow_exec: FlowExecution = dill.load(f)
+            return flow_exec
 
     async def run_all_possible(self, single):
         executables = self.find_executables()
-        if self.dump_state_folder is not None:
-            with self.global_vars_lock:
-                # use dill to dump self.global_vars to file
-                dump_path = f"global_vars_{self.global_execution_count}.dill"          # any filename works
-                with open(dump_path, "wb") as f:    # write‑binary mode
-                    dill.dump(self.global_vars, f)
-                
-        if executables: self.global_execution_count += 1
+        if executables:
+            if self.dump_state_folder is not None and self.num_running_cubes == 0:
+                self._dump_state(self.global_execution_count)
+            self.global_execution_count += 1
         tasks = []
         for starter in executables:
             tasks.append(asyncio.create_task(self.run_cube(starter, single)))
