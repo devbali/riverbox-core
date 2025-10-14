@@ -10,6 +10,7 @@ class FlowExecution:
         self.current_execution_metadata = current_exec_metadata
         self.riverbox_metadata = riverbox_flow_full["metadata"]
         riverbox_flow = riverbox_flow_full["flow"]
+        self.riverbox_flow_full = riverbox_flow_full
 
         self.tags = riverbox_flow_full.get("tags", [])
         self.tag_stack =  riverbox_flow_full.get("tag-stack", [[]])
@@ -25,10 +26,12 @@ class FlowExecution:
         self.callback_function = callback_function
 
         if debug_state is not None:
+            print("Initializing FlowExecution in debug mode with prior execution state at global execution count", debug_state.global_execution_count)
             with debug_state.global_vars_lock:
                 self.prior_debug_execution_object = debug_state
                 self.global_vars = debug_state.global_vars
                 self.global_vars_lock = debug_state.global_vars_lock
+            print("Global vars at start of debug:", self.global_vars)
 
             self.cubes: list[CubeExecution] = []
             for c in riverbox_flow["cubes"]:
@@ -121,6 +124,20 @@ class FlowExecution:
                 executables = {**self.latest_cubes_lookup}
             elif self.execution_type in ["UPTO", "DEBUG_UPTO"]:
                 executables = {**self.critical_path_upto}
+            
+            # If debug, try to repropogate as much as possible
+            # If a node has an incoming edge from a node that has executed, but the edge was not fresh,
+            # then repropogate the return value along that edge
+
+            if self.is_debug():
+                for cube in executables.values():
+                    if cube.done:
+                        for edge in cube.start_edges:
+                            if edge.end not in executables:
+                                continue
+                            dest = executables[edge.end]
+                            if not dest.started and not dest.done and not edge.fresh:
+                                executables[edge.end].propagate_return_value_along_edge(edge)
 
             # Find nodes with no incoming edges, start_nodes that are not done, along with 
             # nodes with all fresh incoming edges, fresh_nodes
@@ -128,7 +145,7 @@ class FlowExecution:
             start_nodes = {id: cube for id, cube in executables.items() if not cube.done}
             fresh_node_inputs = {} # keep track of input arg keys and whether at least one fresh edge points to it
             
-            for cube_id in list(executables.keys()):
+            for cube_id in executables:
                 cube = self.latest_cubes_lookup[cube_id]
 
                 for edge in cube.start_edges:
@@ -159,7 +176,7 @@ class FlowExecution:
                     fresh_nodes[id] = self.latest_cubes_lookup[id]
 
             potential_executables = {**start_nodes, **fresh_nodes}
-            print("Executables step 1", executables, "start_nodes", start_nodes, "fresh_nodes", fresh_nodes, "fresh_node_inputs", fresh_node_inputs)
+            #print("Executables step 1", executables, "start_nodes", start_nodes, "fresh_nodes", fresh_nodes, "fresh_node_inputs", fresh_node_inputs)
 
             for id in list(potential_executables.keys()):
                 # Either the cube is to not run due to a None in input
@@ -167,7 +184,7 @@ class FlowExecution:
                 if potential_executables[id].dont_run or (potential_executables[id].started and not potential_executables[id].done):
                     del potential_executables[id]
 
-        print("Returning Executables", potential_executables)
+        #print("Returning Executables", potential_executables)
         return potential_executables
 
     def update_manager(self, message):
@@ -196,14 +213,27 @@ class FlowExecution:
             with open(self._dump_file_name(counter), "wb") as f:    # write‑binary mode
                 dill.dump(self, f)
 
-    def get_flow_from_checkpoint (self) -> "FlowExecution":
+    def get_flow_from_checkpoint (self, exec_count, allow_closest_lower=True) -> "FlowExecution":
         if self.dump_state_folder is None:
             return None
-        file_name = self._dump_file_name(self.global_execution_count - 1)
-        if not os.path.exists(file_name):
-            return None
+        print("Getting flow from checkpoint at exec count", exec_count, "in folder", self.dump_state_folder)
+        file_name = None
+        while file_name is None:
+            file_name = self._dump_file_name(exec_count)
+            print("file name", file_name, "exists?", os.path.exists(file_name))
+            if (exec_count < 0) or (not os.path.exists(file_name) and not allow_closest_lower):
+                return None
+            
+            if not os.path.exists(file_name):
+                file_name = None
+                exec_count -= 1
+
         with open(file_name, "rb") as f:    # read‑binary mode
             flow_exec: FlowExecution = dill.load(f)
+            flow_exec.global_vars_lock = threading.Lock()
+            flow_exec.scheduler_lock = threading.Lock()
+            flow_exec.callback_lock = threading.Lock()
+            print("Loaded flow execution from file", file_name, "with exec count", flow_exec.global_execution_count, "and cubes", [c.id for c in flow_exec.cubes])
             return flow_exec
 
     async def run_all_possible(self, single):

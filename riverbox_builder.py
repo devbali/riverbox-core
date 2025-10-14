@@ -258,7 +258,25 @@ class Flow:
 
         # Internally store all cubes (including nested FLOWS as Cube(kind="FLOW"))
         self._cubes: List[Cube] = []
-    
+
+    @staticmethod
+    def from_dict(d: Dict[str, Any]) -> "Flow":
+        d_metadata = d.get("metadata", {})
+        f = Flow(
+            name=d_metadata.get("name"),
+            execution_id=d_metadata.get("execution-id"),
+            run_on_same=d_metadata.get("run-on-same"),
+            sub_flow_version_id=d_metadata.get("sub-flow-version-id"),
+            riverbox_version=d_metadata.get("metadata", {}).get("riverbox-version", 1.0),
+            language=d_metadata.get("metadata", {}).get("language", "python"),
+            version=d_metadata.get("metadata", {}).get("version", "3.11"),
+            tags=d_metadata.get("tags", []),
+            env=d_metadata.get("env", {}),
+            args=d_metadata.get("args", {}))
+        for cube_dict in d.get("flow", {}).get("cubes", []):
+            f.add_cube(cube_dict)
+        return f
+
     def __getitem__(self, cube_id):
         cubes =  [cube for cube in self._cubes if cube.id == cube_id]
         if cubes:
@@ -543,7 +561,7 @@ class Flow:
                 sliced_flow._cubes.append(new_cube)
 
         # Return minimal representation of the sliced flow
-        return sliced_flow.to_minimal_dict()
+        return sliced_flow.to_cube_array()
 
     def to_json(self, indent: int = 2) -> str:
         """

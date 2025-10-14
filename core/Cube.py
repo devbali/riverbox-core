@@ -133,7 +133,6 @@ def has_same_underlying_cube (e1, e2):
     return True
 
 class CubeExecution:
-    #TODO: make separate classes for types of Cubes
     class NO_ARG_TYPE():
         pass
     NO_ARG = NO_ARG_TYPE()
@@ -146,6 +145,7 @@ class CubeExecution:
         self.kind = body["kind"]
         self.name = body["name"]
         self.global_execution_count = global_execution_count
+        self.executions = []
         
         if self.kind in ["PARAM", "RESULT"]:
             self.arg_key = body["arg-key"]
@@ -175,7 +175,6 @@ class CubeExecution:
         self.pre_execution_error = ""
         
         self.num_layers = 0
-        self.return_values = []
         self.args = Arg(False, None, None)
         
         self.return_value = None
@@ -245,6 +244,7 @@ class CubeExecution:
                 # Maximum number of layers is 1000
                 break
             execution = CubeExecutionLayer(self, layer, layer_num)
+            self.executions.append(execution)
             tasks.append(asyncio.create_task(
                 self.thread_execute_layer(execution, global_vars, flow)))
             layer_num += 1
@@ -300,7 +300,8 @@ class CubeExecution:
         layer_args = [dict()]
         map_type = False
         add_to_each = lambda arr, k,v: [{**kw, k:v} for kw in arr]
-        
+
+        #print("Getting args layers for cube", self.id, self.args, "flow is debug?", self.flow.is_debug())
         if self.flow.is_debug():
             # try to find such an edge, if found, repropogate arguments
             for cube in self.flow.latest_cubes_lookup.values():
@@ -348,7 +349,6 @@ class CubeExecution:
 
     def execute(self, flow: 'Flow'):
         self.started = True
-        map_type = False
 
         if self.kind == "RESULT":
             assert isinstance(self.args, Arg), self.args

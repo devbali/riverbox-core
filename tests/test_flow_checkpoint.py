@@ -52,7 +52,7 @@ def test_get_flow_from_checkpoint():
         flow_exec._dump_state(0)
 
         # Retrieve flow from checkpoint
-        restored_flow = flow_exec.get_flow_from_checkpoint()
+        restored_flow = flow_exec.get_flow_from_checkpoint(1)
 
         # Test assertions
         assert restored_flow is not None
@@ -87,7 +87,7 @@ def test_get_flow_from_checkpoint_no_dump_folder():
         None  # No dump folder specified
     )
 
-    restored_flow = flow_exec.get_flow_from_checkpoint()
+    restored_flow = flow_exec.get_flow_from_checkpoint(1)
     assert restored_flow is None
 
 def test_get_flow_from_checkpoint_no_previous_dump():
@@ -118,7 +118,7 @@ def test_get_flow_from_checkpoint_no_previous_dump():
         # Set execution count but don't create dump
         flow_exec.global_execution_count = 1
         
-        restored_flow = flow_exec.get_flow_from_checkpoint()
+        restored_flow = flow_exec.get_flow_from_checkpoint(1)
         assert restored_flow is None
 
 def test_debug_execution_with_checkpoint():
@@ -257,7 +257,7 @@ def test_debug_execution_with_checkpoint():
             assert cube3_exec.global_execution_count == 3
 
             # Now restore from checkpoint at execution count 2
-            restored_flow = cube2_exec.get_flow_from_checkpoint()
+            restored_flow = cube3_exec.get_flow_from_checkpoint(2)
             assert restored_flow is not None
             assert restored_flow.global_vars["result"] == 30
             assert restored_flow.global_vars["x"] == 10
