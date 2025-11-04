@@ -9,7 +9,7 @@ def get_uuid ():
 
     return uuid_str
 
-def call_external_flow (body_flow, parent_metadata: dict, callback, args, global_execution_count, layer, env, parent_cubeexecution_id):
+def call_external_flow (body_flow, parent_metadata: dict, callback, args, global_execution_count=None, layer=None, env=None, parent_cubeexecution_id=None):
     from .FlowExecution import FlowExecution
 
     if body_flow["run-on-same"]:

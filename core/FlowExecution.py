@@ -6,7 +6,19 @@ import os
 import dill
 
 class FlowExecution:
-    def __init__(self, riverbox_flow_full, current_exec_metadata, callback_function, execution_type, cube_id, debug_state: 'FlowExecution', dump_state_folder=None):
+    def __init__(self, riverbox_flow_full, current_exec_metadata, callback_function, execution_type, cube_id, debug_state: 'FlowExecution', dump_state_folder=None, flow_registry=None):
+        """
+        riverbox_flow_full: Full riverbox flow dict with metadata and env
+        current_exec_metadata: dict with execution-id, flow-id, invocation-id, parent-cube-execution-id
+        callback_function: function to call with updates
+        execution_type: "FULL", "ONLY", "UPTO", "DEBUG_ONLY", 
+                        "DEBUG_UPTO", "DEBUG_NEXT", "DEBUG_START"
+        cube_id: If execution_type is "ONLY" or "UPTO", the cube id to execute upto
+        debug_state: If in debug mode, the prior FlowExecution state to use for global vars and cube states
+        dump_state_folder: If provided, folder to dump execution state after each global execution count
+        flow_registry: Optional dict of flow_name to riverbox_flow_full dicts for subflow calls in code
+        """
+
         self.current_execution_metadata = current_exec_metadata
         self.riverbox_metadata = riverbox_flow_full["metadata"]
         riverbox_flow = riverbox_flow_full["flow"]
@@ -16,6 +28,8 @@ class FlowExecution:
         self.tag_stack =  riverbox_flow_full.get("tag-stack", [[]])
         self.execution_id = current_exec_metadata["execution-id"]
         self.flow_id = current_exec_metadata["flow-id"]
+        
+        self.flow_registry = flow_registry if flow_registry is not None else {}
         
         self.dump_state_folder = dump_state_folder
         self.num_running_cubes = 0
@@ -205,13 +219,23 @@ class FlowExecution:
             return None
         if not os.path.exists(self.dump_state_folder):
             os.makedirs(self.dump_state_folder)
-        return os.path.join(self.dump_state_folder, f"global_vars_after_{counter}.dill")
+        return os.path.join(self.dump_state_folder, f"flow_id_{self.flow_id}_execution_id_{self.execution_id}_global_vars_after_{counter}.dill")
 
     def _dump_state (self, counter):
         with self.global_vars_lock:
             # use dill to dump self.global_vars to file
             with open(self._dump_file_name(counter), "wb") as f:    # write‑binary mode
                 dill.dump(self, f)
+
+    @staticmethod
+    def get_flow_from_checkpoint_filename (filename) -> "FlowExecution":
+        with open(filename, "rb") as f:    # read‑binary mode
+            flow_exec: FlowExecution = dill.load(f)
+            flow_exec.global_vars_lock = threading.Lock()
+            flow_exec.scheduler_lock = threading.Lock()
+            flow_exec.callback_lock = threading.Lock()
+            print("Loaded flow execution from file", filename, "with exec count", flow_exec.global_execution_count, "and cubes", [c.id for c in flow_exec.cubes])
+            return flow_exec
 
     def get_flow_from_checkpoint (self, exec_count, allow_closest_lower=True) -> "FlowExecution":
         if self.dump_state_folder is None:
@@ -228,13 +252,7 @@ class FlowExecution:
                 file_name = None
                 exec_count -= 1
 
-        with open(file_name, "rb") as f:    # read‑binary mode
-            flow_exec: FlowExecution = dill.load(f)
-            flow_exec.global_vars_lock = threading.Lock()
-            flow_exec.scheduler_lock = threading.Lock()
-            flow_exec.callback_lock = threading.Lock()
-            print("Loaded flow execution from file", file_name, "with exec count", flow_exec.global_execution_count, "and cubes", [c.id for c in flow_exec.cubes])
-            return flow_exec
+        return FlowExecution.get_flow_from_checkpoint_filename(file_name)
 
     async def run_all_possible(self, single):
         executables = self.find_executables()

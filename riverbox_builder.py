@@ -449,10 +449,12 @@ class Flow:
             for edge in cube.start_edges:
                 if edge["id"] == edge_id:
                     cube.start_edges.remove(edge)
-    
+
     def to_dict(self):
         return self.to_json(-1)
 
+    def __repr__ (self):
+        return self.to_json()
 
     def to_cube_array (self) -> List[Dict[str, Any]]:
         """
@@ -622,5 +624,5 @@ class Flow:
             return full
         return json.dumps(full, indent=indent)
     
-    def run_full_with_args (self, callback, args):
-        return main(self.to_json(-1), get_invocation_metadata(), callback, "FULL",  args=args)
+    def run_full_with_args (self, callback, **kwargs):
+        return main(self.to_json(-1), get_invocation_metadata(), callback, "FULL", **kwargs)

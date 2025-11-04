@@ -254,7 +254,8 @@ class CubeExecution:
     def propagate_return_value_along_edge (self, edge, next_function=None):
         # Based on return value of current Cube and the edge to the next cube, create
         #   the value to be fed to the arg in the next cube
-        
+        #print("Propagating return value along edge", edge.id, "from cube", self.id, "to cube", edge.end)
+        #print("Current return value:", self.return_value, "map type?", self.map_type, "edge start arg key", edge.start_arg_key, "edge end arg key", edge.end_arg_key)
         if next_function is None:
             next_function = self.flow.latest_cubes_lookup[edge.end]
 
@@ -271,6 +272,8 @@ class CubeExecution:
                     return_value_on_edge.append(layer_rv)
         elif isinstance(self.return_value, dict) and edge.start_arg_key in self.return_value and self.return_value[edge.start_arg_key] is not None:
             return_value_on_edge = self.return_value[edge.start_arg_key]
+        elif isinstance(edge.start_arg_key, str) and edge.start_arg_key[0] == "-":
+            return_value_on_edge = None
         else:
             edge.fresh = False
             next_function.dont_run = True

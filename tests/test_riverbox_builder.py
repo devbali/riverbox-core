@@ -9,7 +9,6 @@ def get_sub_flow ():
         print("RUNNING ON TOPIC", topics)
         rbxm.output = f"Write a joke about {topics[0]}"
 
-
     @rbx_function()
     def chat_gpt(rbxm, prompt):
         import time

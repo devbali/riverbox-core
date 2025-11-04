@@ -77,9 +77,12 @@ def execute_code (cube_execution_layer, global_vars, flow):
 
         rbxm = riverbox_frontend.RiverboxCubeManager(cube_execution_layer.args, 
                                                      cube_execution_layer.get_client_box_metadata(),
-                                                     flow.get_client_riverbox_metadata())
+                                                     flow.get_client_riverbox_metadata(), 
+                                                     flow_registry=flow.flow_registry,
+                                                     main_callback = flow.callback_function)
         local_global_vars["rbx"] = riverbox_frontend
         local_global_vars["rbxm"] = rbxm
+        local_global_vars["__name__"] = "__main__"
 
         with ThreadStdoutRedirect(cube_execution_layer.console_output):
             exec(cube_execution_layer.cube.code, local_global_vars)
