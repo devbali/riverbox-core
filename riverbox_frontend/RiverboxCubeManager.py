@@ -37,18 +37,18 @@ class RiverboxCubeManager ():
     self.finished = True
 
   def call (self, riverbox_name, args):
-    print("Calling external flow:", riverbox_name, "with args:", args, self.flow_registry)
     if riverbox_name not in self.flow_registry:
       return None
 
     rbx_flow = self.flow_registry[riverbox_name]
-    body = rbx_flow
+    body = rbx_flow.copy()  # Create a COPY to avoid modifying flow_registry
     body["run-on-same"] = True
     body["sub-flow-version-id"] = "latest"
     body["cubes"] = rbx_flow["flow"]["cubes"]
     del body["flow"]
     callback = self.main_callback if self.main_callback is not None else lambda x: x
-    
-    print("Calling external flow:", riverbox_name, "with args:", args)
-    call_external_flow(body,   {**self.riverbox_metadata, "invocation-id": None}, callback, args)
+
+    # Pass flow_registry to enable speculation/caching in nested calls
+    result = call_external_flow(body, {**self.riverbox_metadata, "invocation-id": None}, callback, args, flow_registry=self.flow_registry)
+    return result
 

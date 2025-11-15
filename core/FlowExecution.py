@@ -30,7 +30,7 @@ class FlowExecution:
         self.flow_id = current_exec_metadata["flow-id"]
         
         self.flow_registry = flow_registry if flow_registry is not None else {}
-        
+
         self.dump_state_folder = dump_state_folder
         self.num_running_cubes = 0
 
@@ -296,10 +296,14 @@ class FlowExecution:
         })
 
     def execute(self, args, worker_assigned=False, parent_cubeexecution_id=None, flow_version_id=None):
+        # Get riverbox name from metadata or attribute
+        riverbox_name = self.riverbox_metadata.get("flow-name") or getattr(self, "flow_name", None)
+
         self.update_manager({
             "type": "NEW_EXECUTION",
             "execution-id": self.execution_id,
             "flow-id": self.flow_id,
+            "riverbox-name": riverbox_name,
             "args": args,
             "execution-type": self.execution_type,
             "invocation-id": self.current_execution_metadata["invocation-id"],

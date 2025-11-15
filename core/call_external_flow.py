@@ -9,7 +9,7 @@ def get_uuid ():
 
     return uuid_str
 
-def call_external_flow (body_flow, parent_metadata: dict, callback, args, global_execution_count=None, layer=None, env=None, parent_cubeexecution_id=None):
+def call_external_flow (body_flow, parent_metadata: dict, callback, args, global_execution_count=None, layer=None, env=None, parent_cubeexecution_id=None, flow_registry=None):
     from .FlowExecution import FlowExecution
 
     if body_flow["run-on-same"]:
@@ -23,7 +23,13 @@ def call_external_flow (body_flow, parent_metadata: dict, callback, args, global
         body["tags"] = body_flow["tags"]
         body["tag-stack"] = body_flow["tag-stack"]
 
-        sub_flow = FlowExecution(body, parent_metadata_for_child, callback, "FULL", None, None)
+        # Pass flow_registry to enable speculation/caching in nested calls
+        sub_flow = FlowExecution(body, parent_metadata_for_child, callback, "FULL", None, None, flow_registry=flow_registry)
+
+        # Set riverbox name from metadata if available
+        if "flow-name" in body["metadata"]:
+            sub_flow.flow_name = body["metadata"]["flow-name"]
+
         return sub_flow.execute(args, worker_assigned=True, parent_cubeexecution_id=parent_cubeexecution_id, flow_version_id=body_flow["sub-flow-version-id"])
 
     # Send it out to cluster manager

@@ -114,13 +114,13 @@ def test_run_complete ():
         if m["type"] == "EXECUTION_DONE" and "nest-result" in m["results"]:
             assert m["results"]["nest-result"] == ["Bears are funny (GPT)"] * 2
             result_found = True
-    parent_f.run_full_with_args(callback, {})
+    parent_f.run_full_with_args(callback, args={})
     assert result_found
 
 def test_tagstack ():
     parent_f = get_parent_flow()
     found = False
-    
+
     def callback (m):
         nonlocal found
         #print(m)
@@ -135,6 +135,6 @@ def test_tagstack ():
                 assert len(tag_stack[1]["cubes"]) == 4
                 found = True
 
-    parent_f.run_full_with_args(callback, {})
+    parent_f.run_full_with_args(callback, args={})
     assert found
 
